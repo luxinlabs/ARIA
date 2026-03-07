@@ -5,6 +5,7 @@ ARIA is a FastAPI + LangGraph backend with a React dashboard frontend.
 ## Quick Start
 
 ### 1) Backend
+
 From project root (`ARIA`):
 
 ```bash
@@ -13,10 +14,12 @@ uvicorn app.main:app --reload --port 8000 --app-dir backend
 ```
 
 Backend URLs:
+
 - API root: `http://127.0.0.1:8000/`
 - OpenAPI docs: `http://127.0.0.1:8000/docs`
 
 ### 2) Frontend
+
 In a separate terminal:
 
 ```bash
@@ -26,19 +29,58 @@ npm run dev
 ```
 
 Frontend URL:
+
 - `http://localhost:5173` (or next available port)
+
+---
+
+## Deploy
+
+### Vercel (Frontend)
+
+This repo includes root `vercel.json` configured to build Vite from `frontend/`.
+
+1. Import this repo in Vercel.
+2. In Vercel Project Settings → Environment Variables, set:
+   - `VITE_API_BASE=https://<your-backend-domain>`
+3. Deploy.
+
+Local equivalent:
+
+```bash
+npm i -g vercel
+vercel
+vercel --prod
+```
+
+### Backend hosting (recommended separate service)
+
+Host FastAPI on Render/Railway/Fly/VM and set:
+
+- `OPENAI_API_KEY=<your_key>`
+
+Start command:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT --app-dir backend
+```
+
+> Note: `/aria/strategy` depends on initialized in-memory runtime state. After backend restart/redeploy,
+> call `POST /aria/init` again before `GET /aria/strategy`.
 
 ---
 
 ## How to Use ARIA Dashboard
 
 At the top control bar, fill:
+
 - **Brand URL** (must be a valid URL)
 - **Goal** (purchases/leads/signups/awareness)
 - **Daily Budget** (**must be > 0**)
 - **Brand Name**
 
 Then click:
+
 1. **Initialize**: creates a new ARIA run and seeds shared memory.
 2. **Run 1 Cycle**: executes one full agent loop.
 3. **Refresh**: reloads all current state.
@@ -49,6 +91,7 @@ Then click:
 ## What Happens After Initialization
 
 When you click **Initialize** (`POST /aria/init`):
+
 1. Backend creates `ARIAState` with your brand input.
 2. Shared memory is seeded (production info, target audience, generations, performance history).
 3. An initial event is emitted: `"ARIA run initialized"`.
@@ -66,6 +109,7 @@ No optimization cycle runs automatically on init; you trigger it with **Run 1 Cy
 ## Why You Could See "ARIA run initialized" More Than Once
 
 Two common sources:
+
 1. **Toast + live event are separate UI surfaces**
    - Toast shows `Run initialized`
    - Live feed shows event reason `ARIA run initialized`
@@ -96,6 +140,7 @@ The frontend now deduplicates live-feed events by `event_id` and cleans websocke
 ## Troubleshooting
 
 ### `No module named 'app'`
+
 Run backend from project root with `--app-dir backend`:
 
 ```bash
@@ -110,7 +155,9 @@ lsof -ti:8000 | xargs kill -9
 ```
 
 ### `422` on `/aria/init` (`budget_daily`)
+
 Ensure **Daily Budget > 0**.
 
 ### Security note
+
 Do not hardcode API keys in source files. Prefer environment variables (e.g., `OPENAI_API_KEY`).

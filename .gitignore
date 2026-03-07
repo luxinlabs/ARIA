@@ -186,3 +186,5 @@ config/secrets/
 # Temporary folders
 tmp/
 temp/
+.vercel
+.env*.local
