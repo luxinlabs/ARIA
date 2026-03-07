@@ -144,6 +144,36 @@ h1 {
   align-items: center;
 }
 
+.init-inputs {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 300px;
+}
+
+.init-inputs input,
+.init-inputs select {
+  border: 1px solid var(--line);
+  background: rgba(19, 31, 64, 0.6);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.9rem;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.init-inputs input:focus,
+.init-inputs select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(19, 31, 64, 0.8);
+}
+
+.init-inputs input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
 .status-pill {
   margin-left: auto;
   border-radius: 999px;

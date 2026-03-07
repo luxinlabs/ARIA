@@ -41,6 +41,11 @@ app.add_middleware(
 app.include_router(aria_router)
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"message": "ARIA Backend API", "version": "0.1.0", "docs": "/docs"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

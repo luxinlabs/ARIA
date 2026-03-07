@@ -36,6 +36,14 @@ export default function App() {
     videos_required: 2,
   });
 
+  const [initInput, setInitInput] = useState({
+    url: "https://example.com",
+    goal: "purchases",
+    budget_daily: 500,
+    business_type: "B2C",
+    brand_name: "NovaSkin",
+  });
+
   const keepaliveRef = useRef(null);
 
   const summaryStats = useMemo(() => {
@@ -144,7 +152,36 @@ export default function App() {
       </header>
 
       <section className="control-row glass">
-        <button disabled={loading} onClick={() => withLoader(() => ariaApi.init(initialInitPayload), "Run initialized")}>Initialize</button>
+        <div className="init-inputs">
+          <input
+            type="url"
+            placeholder="Brand URL"
+            value={initInput.url}
+            onChange={(e) => setInitInput({ ...initInput, url: e.target.value })}
+          />
+          <select
+            value={initInput.goal}
+            onChange={(e) => setInitInput({ ...initInput, goal: e.target.value })}
+          >
+            <option value="purchases">Purchases</option>
+            <option value="leads">Leads</option>
+            <option value="signups">Signups</option>
+            <option value="awareness">Awareness</option>
+          </select>
+          <input
+            type="number"
+            placeholder="Daily Budget"
+            value={initInput.budget_daily}
+            onChange={(e) => setInitInput({ ...initInput, budget_daily: Number(e.target.value) })}
+          />
+          <input
+            type="text"
+            placeholder="Brand Name"
+            value={initInput.brand_name}
+            onChange={(e) => setInitInput({ ...initInput, brand_name: e.target.value })}
+          />
+        </div>
+        <button disabled={loading} onClick={() => withLoader(() => ariaApi.init(initInput), "Run initialized")}>Initialize</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.step(), "Cycle executed")}>Run 1 Cycle</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.pause("Paused from dashboard"), "Run paused")}>Emergency Pause</button>
         <button disabled={loading} onClick={() => withLoader(() => refreshAll(), "Refreshed")}>Refresh</button>
