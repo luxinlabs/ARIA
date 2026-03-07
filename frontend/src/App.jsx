@@ -45,6 +45,9 @@ export default function App() {
   });
 
   const keepaliveRef = useRef(null);
+  const reconnectRef = useRef(null);
+  const wsRef = useRef(null);
+  const seenEventIdsRef = useRef(new Set());
 
   const summaryStats = useMemo(() => {
     const confirmed = memory?.experiment_log?.filter((x) => x.result === "CONFIRMED").length || 0;
@@ -82,6 +85,18 @@ export default function App() {
     }));
   }
 
+  function initializeRun() {
+    const budgetDaily = Number(initInput.budget_daily);
+    if (!Number.isFinite(budgetDaily) || budgetDaily <= 0) {
+      throw new Error("Daily budget must be greater than 0");
+    }
+
+    return ariaApi.init({
+      ...initInput,
+      budget_daily: budgetDaily,
+    });
+  }
+
   async function withLoader(task, successMessage) {
     try {
       setLoading(true);
@@ -97,10 +112,14 @@ export default function App() {
 
   function connectLiveFeed() {
     const ws = new WebSocket(`${wsBase}/aria/live`);
+    wsRef.current = ws;
 
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
+        const eventId = parsed?.event_id;
+        if (eventId && seenEventIdsRef.current.has(eventId)) return;
+        if (eventId) seenEventIdsRef.current.add(eventId);
         setEvents((prev) => [parsed, ...prev].slice(0, 120));
       } catch {
         // ignore malformed messages
@@ -115,12 +134,17 @@ export default function App() {
 
     ws.onclose = () => {
       if (keepaliveRef.current) clearInterval(keepaliveRef.current);
-      setTimeout(connectLiveFeed, 1500);
+      reconnectRef.current = setTimeout(connectLiveFeed, 1500);
     };
   }
 
   useEffect(() => {
     connectLiveFeed();
+    return () => {
+      if (keepaliveRef.current) clearInterval(keepaliveRef.current);
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      if (wsRef.current && wsRef.current.readyState <= 1) wsRef.current.close();
+    };
   }, []);
 
   useEffect(() => {
@@ -172,7 +196,9 @@ export default function App() {
             type="number"
             placeholder="Daily Budget"
             value={initInput.budget_daily}
-            onChange={(e) => setInitInput({ ...initInput, budget_daily: Number(e.target.value) })}
+            min="1"
+            step="1"
+            onChange={(e) => setInitInput({ ...initInput, budget_daily: e.target.value })}
           />
           <input
             type="text"
@@ -181,7 +207,7 @@ export default function App() {
             onChange={(e) => setInitInput({ ...initInput, brand_name: e.target.value })}
           />
         </div>
-        <button disabled={loading} onClick={() => withLoader(() => ariaApi.init(initInput), "Run initialized")}>Initialize</button>
+        <button disabled={loading} onClick={() => withLoader(() => initializeRun(), "Run initialized")}>Initialize</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.step(), "Cycle executed")}>Run 1 Cycle</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.pause("Paused from dashboard"), "Run paused")}>Emergency Pause</button>
         <button disabled={loading} onClick={() => withLoader(() => refreshAll(), "Refreshed")}>Refresh</button>

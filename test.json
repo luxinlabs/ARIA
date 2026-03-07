@@ -1,0 +1,49 @@
+{
+  "production_information": {
+    "product_name": "AI-Powered Advertising Solutions",
+    "product_category": "Digital Marketing",
+    "offer_summary": "Leverage cutting-edge AI technology to optimize your advertising campaigns and boost your sales.",
+    "price_point": "$299/month",
+    "brand_url": "https://adsgency.ai/"
+  },
+  "platform": {
+    "channels": ["webads", "images", "videos"],
+    "images_required": 5,
+    "videos_required": 2
+  },
+  "target_audience": {
+    "primary_segment": "Small to Medium Enterprises (SMEs)",
+    "age_range": "25-45",
+    "geography": ["United States", "Canada", "United Kingdom"],
+    "interests": ["digital marketing", "business growth", "technology"],
+    "belief_state": "Seeking effective advertising solutions to increase sales.",
+    "key_objections": [
+      "Budget constraints",
+      "Skepticism about AI effectiveness"
+    ]
+  },
+  "generations": {
+    "copies_per_cycle": 3,
+    "max_generations": 5,
+    "active_generation": 2
+  },
+  "performance_history": {
+    "platform_user_click_history": [
+      {
+        "platform": "meta",
+        "user_clicks": 1500,
+        "integrations_from_sites": ["Facebook", "Instagram"],
+        "paid_conversions": 150,
+        "conversion_rate": 0.1
+      },
+      {
+        "platform": "google",
+        "user_clicks": 1200,
+        "integrations_from_sites": ["Google Ads"],
+        "paid_conversions": 120,
+        "conversion_rate": 0.1
+      }
+    ],
+    "overall_conversion_rate": 0.1
+  }
+}

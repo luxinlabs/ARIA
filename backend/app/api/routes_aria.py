@@ -7,9 +7,11 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, st
 
 from app.core.models import (
     ARIAState,
+    AgentState,
     AgentEvent,
     AgentName,
     ApproveRequest,
+    GoalType,
     InitRequest,
     InitResponse,
     PauseRequest,
@@ -52,15 +54,36 @@ async def _get_or_404() -> ARIAState:
     return state
 
 
+async def _get_state_or_none() -> ARIAState | None:
+    return await runtime.get_state()
+
+
 @router.post("/init", response_model=InitResponse)
 async def init_aria(payload: InitRequest) -> InitResponse:
-    state = await runtime.init_run(payload)
+    try:
+        state = await runtime.init_run(payload)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Initialization failed from strategy generation: {exc}",
+        ) from exc
+
     return InitResponse(run_id=state.run_id, message="ARIA initialized")
 
 
 @router.get("/status", response_model=StatusResponse)
 async def aria_status() -> StatusResponse:
-    state = await _get_or_404()
+    state = await _get_state_or_none()
+    if state is None:
+        return StatusResponse(
+            run_id="uninitialized",
+            iteration=0,
+            paused=False,
+            goal=GoalType.PURCHASES,
+            budget_daily=0.0,
+            agent_states={name: AgentState() for name in AgentName},
+        )
+
     return StatusResponse(
         run_id=state.run_id,
         iteration=state.iteration,
@@ -73,8 +96,45 @@ async def aria_status() -> StatusResponse:
 
 @router.get("/memory")
 async def aria_memory() -> dict[str, Any]:
-    state = await _get_or_404()
+    state = await _get_state_or_none()
+    if state is None:
+        return {}
     return state.memory.model_dump(mode="json")
+
+
+@router.get("/strategy")
+async def aria_strategy_snapshot() -> dict[str, Any]:
+    """Return a focused strategy payload after initialization."""
+    state = await _get_or_404()
+    memory = state.memory
+
+    return {
+        "production_information": memory.production_information.model_dump(mode="json"),
+        "platform": {
+            "channels": memory.platform_context.channels,
+            "images_required": memory.platform_context.images_required,
+            "videos_required": memory.platform_context.videos_required,
+        },
+        "target_audience": memory.target_audience.model_dump(mode="json"),
+        "generations": {
+            "copies_per_cycle": memory.generations.copies_per_cycle,
+            "max_generations": memory.generations.max_generations,
+            "active_generation": memory.generations.active_generation,
+        },
+        "performance_history": {
+            "platform_user_click_history": [
+                {
+                    "platform": row.platform,
+                    "user_clicks": row.user_clicks,
+                    "integrations_from_sites": row.integrations_from_sites,
+                    "paid_conversions": row.paid_conversions,
+                    "conversion_rate": row.conversion_rate,
+                }
+                for row in memory.performance_history.platform_user_click_history
+            ],
+            "overall_conversion_rate": memory.performance_history.overall_conversion_rate,
+        },
+    }
 
 
 @router.patch("/memory")
@@ -111,7 +171,9 @@ async def patch_memory(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/hypotheses")
 async def aria_hypotheses() -> list[dict[str, Any]]:
-    state = await _get_or_404()
+    state = await _get_state_or_none()
+    if state is None:
+        return []
     return [h.model_dump(mode="json") for h in state.hypotheses]
 
 
@@ -135,7 +197,9 @@ async def approve_hypothesis(hypothesis_id: str, payload: ApproveRequest) -> dic
 
 @router.get("/experiments")
 async def aria_experiments() -> list[dict[str, Any]]:
-    state = await _get_or_404()
+    state = await _get_state_or_none()
+    if state is None:
+        return []
     return [e.model_dump(mode="json") for e in state.experiments]
 
 
@@ -157,7 +221,17 @@ async def aria_eval(exp_id: str) -> dict[str, Any]:
 
 @router.get("/performance", response_model=PerformanceResponse)
 async def aria_performance() -> PerformanceResponse:
-    state = await _get_or_404()
+    state = await _get_state_or_none()
+    if state is None:
+        return PerformanceResponse(
+            unified_roas=0.0,
+            meta_roas=0.0,
+            google_roas=0.0,
+            cpa=0.0,
+            ctr=0.0,
+            cvr=0.0,
+        )
+
     latest_exp = state.experiments[-1] if state.experiments else None
     if latest_exp:
         metrics = latest_exp.metrics
