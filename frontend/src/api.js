@@ -67,6 +67,12 @@ export const ariaApi = {
   step() {
     return request("/aria/step", { method: "POST" });
   },
+  report() {
+    return request("/aria/report");
+  },
+  sendReport(payload) {
+    return request("/aria/report/send", { method: "POST", body: JSON.stringify(payload) });
+  },
   pause(reason) {
     return request("/aria/pause", { method: "POST", body: JSON.stringify({ reason }) });
   },

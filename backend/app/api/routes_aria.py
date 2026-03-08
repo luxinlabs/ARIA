@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
+import json
+import re
+from datetime import UTC, datetime
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 
@@ -20,6 +26,8 @@ from app.core.models import (
     PerformanceResponse,
     PlatformMetrics,
     PlatformType,
+    RunReportResponse,
+    SendReportRequest,
     SharedMemory,
     StatusResponse,
 )
@@ -153,6 +161,133 @@ async def _get_or_404(request: Request, run_id: str | None = None) -> ARIAState:
 
 async def _get_state_or_none(request: Request, run_id: str | None = None) -> ARIAState | None:
     return await runtime.get_state(_resolve_run_id(request, run_id))
+
+
+def _safe_text(value: Any, fallback: str = "N/A") -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text if text else fallback
+
+
+def _build_cycle_report_markdown(state: ARIAState) -> str:
+    company_name = _safe_text(state.memory.brand_dna.name, _safe_text(state.brand.brand_name, "Unknown Company"))
+    latest_experiment = state.experiments[-1] if state.experiments else None
+    latest_evaluation = state.evaluation
+    production = state.memory.production_information
+    audience = state.memory.target_audience
+
+    channel_mix = ", ".join(
+        getattr(ch, "value", str(ch)) for ch in state.memory.platform_context.channels
+    ) or "N/A"
+    generated_at = datetime.now(UTC).isoformat()
+    top_hypotheses = state.hypotheses[:3]
+    hypothesis_lines = "\n".join(
+        f"- {item.statement} (confidence: {item.confidence:.2f})" for item in top_hypotheses
+    )
+    if not hypothesis_lines:
+        hypothesis_lines = "- No hypotheses generated in this cycle."
+
+    experiment_summary = "No experiment has been produced yet."
+    if latest_experiment:
+        experiment_summary = (
+            f"ID: {latest_experiment.experiment_id}; status: {latest_experiment.status}; "
+            f"ROAS: {latest_experiment.metrics.roas}; CPA: {latest_experiment.metrics.cpa}; "
+            f"CTR: {latest_experiment.metrics.ctr}; CVR: {latest_experiment.metrics.cvr}"
+        )
+
+    evaluation_summary = "No evaluation output available yet."
+    if latest_evaluation:
+        outcome = getattr(latest_evaluation, "hypothesis_outcome", None)
+        confidence = getattr(latest_evaluation, "confidence_score", None)
+        route = getattr(latest_evaluation, "route", None)
+        confidence_text = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "N/A"
+        outcome_text = getattr(outcome, "value", str(outcome) if outcome is not None else "N/A")
+        route_text = getattr(route, "value", str(route) if route is not None else "N/A")
+        evaluation_summary = (
+            f"Outcome: {outcome_text}; confidence: {confidence_text}; "
+            f"winning element: {_safe_text(getattr(latest_evaluation, 'winning_element', None))}; "
+            f"effect size: {_safe_text(getattr(latest_evaluation, 'effect_size', None))}; "
+            f"route: {route_text}"
+        )
+
+    return f"""# ARIA Cycle Report
+
+Generated at: {generated_at}
+Run ID: {state.run_id}
+Cycle Iteration: {state.iteration}
+
+## Company Snapshot
+- Company: {company_name}
+- Website: {_safe_text(state.brand.url)}
+- Goal: {state.brand.goal.value}
+- Daily Budget: ${state.brand.budget_daily}
+- Business Type: {state.brand.business_type.value}
+
+## Production Information (Website-Derived)
+- Product Name: {_safe_text(production.product_name)}
+- Category: {_safe_text(production.product_category)}
+- Offer Summary: {_safe_text(production.offer_summary)}
+- Price Point: {_safe_text(production.price_point)}
+- Brand URL: {_safe_text(production.brand_url, _safe_text(state.brand.url))}
+
+## Target Audience
+- Primary Segment: {_safe_text(audience.primary_segment)}
+- Age Range: {_safe_text(audience.age_range)}
+- Geography: {", ".join(audience.geography) if audience.geography else "N/A"}
+- Key Interests: {", ".join(audience.interests) if audience.interests else "N/A"}
+
+## Platform & Creative Setup
+- Channels: {channel_mix}
+- Copies per Cycle: {state.memory.generations.copies_per_cycle}
+- Images Required: {state.memory.platform_context.images_required}
+- Videos Required: {state.memory.platform_context.videos_required}
+
+## Hypotheses (Top 3)
+{hypothesis_lines}
+
+## Experiment Snapshot
+{experiment_summary}
+
+## Evaluation & Learning
+{evaluation_summary}
+
+## Notes
+- This report was generated after at least one completed cycle.
+- Data source is run-scoped shared memory and latest cycle artifacts.
+"""
+
+
+def _post_openclaw_prompt(base_url: str, prompt: str) -> dict[str, Any]:
+    url_base = base_url.rstrip("/")
+    payload = json.dumps({"prompt": prompt}).encode("utf-8")
+    candidates = [url_base, f"{url_base}/send", f"{url_base}/prompt"]
+    errors: list[str] = []
+
+    for endpoint in candidates:
+        request = UrlRequest(
+            endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                body = response.read().decode("utf-8", errors="ignore")
+                return {
+                    "endpoint": endpoint,
+                    "status_code": response.status,
+                    "response": body,
+                }
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore") if exc.fp else ""
+            errors.append(f"{endpoint} -> HTTP {exc.code}: {body[:180]}")
+        except URLError as exc:
+            errors.append(f"{endpoint} -> URL error: {exc.reason}")
+        except TimeoutError:
+            errors.append(f"{endpoint} -> request timed out")
+
+    raise RuntimeError("OpenClaw delivery failed. Tried endpoints: " + " | ".join(errors))
 
 
 @router.post("/init", response_model=InitResponse)
@@ -454,6 +589,70 @@ async def aria_step(request: Request) -> dict[str, Any]:
         "hypotheses": [h.model_dump(mode="json") for h in updated.hypotheses],
         "evaluation": updated.evaluation.model_dump(mode="json") if updated.evaluation else None,
     }
+
+
+@router.get("/report", response_model=RunReportResponse)
+async def aria_report(request: Request) -> RunReportResponse:
+    state = await _get_or_404(request)
+    if state.iteration < 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Run report is available only after at least 1 completed cycle.",
+        )
+
+    company_name = _safe_text(state.memory.brand_dna.name, _safe_text(state.brand.brand_name, "company"))
+    slug = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-") or "company"
+    report_markdown = _build_cycle_report_markdown(state)
+    generated_at = datetime.now(UTC)
+
+    return RunReportResponse(
+        run_id=state.run_id,
+        iteration=state.iteration,
+        file_name=f"aria-report-{slug}-{state.run_id}-iter-{state.iteration}.md",
+        company_name=company_name,
+        generated_at=generated_at,
+        report_markdown=report_markdown,
+    )
+
+
+@router.post("/report/send")
+async def aria_report_send(request: Request, payload: SendReportRequest) -> dict[str, Any]:
+    state = await _get_or_404(request)
+    if state.iteration < 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot send report before at least 1 completed cycle.",
+        )
+
+    report_markdown = _build_cycle_report_markdown(state)
+    prompt = f"{payload.prompt_prefix}\n\n{report_markdown}"
+    try:
+        delivery = await runtime_loop_safe_openclaw_send(str(payload.openclaw_url), prompt)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    event = AgentEvent(
+        run_id=state.run_id,
+        iteration=state.iteration,
+        agent=AgentName.NOTIFY,
+        action="report_sent",
+        reason="Cycle report delivered to OpenClaw for Slack notification",
+        confidence=1.0,
+        diff={"endpoint": delivery["endpoint"], "status_code": delivery["status_code"]},
+    )
+    await runtime.publish_event(event)
+
+    return {
+        "status": "sent",
+        "run_id": state.run_id,
+        "iteration": state.iteration,
+        "openclaw_endpoint": delivery["endpoint"],
+        "openclaw_status": delivery["status_code"],
+    }
+
+
+async def runtime_loop_safe_openclaw_send(base_url: str, prompt: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_post_openclaw_prompt, base_url, prompt)
 
 
 @router.post("/compare/save")

@@ -29,6 +29,9 @@ export default function App() {
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
+  const [report, setReport] = useState(null);
+  const [openclawUrl, setOpenclawUrl] = useState("http://127.0.0.1:18789/");
+  const [sendingReport, setSendingReport] = useState(false);
 
   const [patchInput, setPatchInput] = useState({
     product_name: "",
@@ -79,6 +82,7 @@ export default function App() {
 
     setActiveRunId(effectiveRunId);
     setSelectedRunId(effectiveRunId);
+    setReport((prev) => (prev?.run_id === effectiveRunId ? prev : null));
 
     const [nextStatus, nextMemory, nextHyp, nextExp, nextPerf] = await Promise.all([
       ariaApi.status(),
@@ -119,6 +123,7 @@ export default function App() {
     await ariaApi.reset();
     seenEventIdsRef.current.clear();
     setEvents([]);
+    setReport(null);
   }
 
   async function switchSession(runId) {
@@ -127,6 +132,7 @@ export default function App() {
       setSelectedRunId(null);
       seenEventIdsRef.current.clear();
       setEvents([]);
+      setReport(null);
       return;
     }
     await ariaApi.activateSession(runId);
@@ -134,6 +140,7 @@ export default function App() {
     setSelectedRunId(runId);
     seenEventIdsRef.current.clear();
     setEvents([]);
+    setReport(null);
   }
 
   async function deleteCurrentSession() {
@@ -143,19 +150,56 @@ export default function App() {
     setSelectedRunId(null);
     seenEventIdsRef.current.clear();
     setEvents([]);
+    setReport(null);
   }
 
-  async function withLoader(task, successMessage) {
+  async function withLoader(task, successMessage, options = {}) {
     try {
       setLoading(true);
       const result = await task();
       if (successMessage) setToast(successMessage);
-      await refreshAll(result?.run_id || null);
+      if (!options.skipRefresh) {
+        await refreshAll(result?.run_id || null);
+      }
       return result;
     } catch (error) {
       setToast(`Error: ${String(error.message || error)}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function generateReport() {
+    const payload = await ariaApi.report();
+    setReport(payload);
+    return payload;
+  }
+
+  async function downloadReport() {
+    const payload = report || (await generateReport());
+    const file = new Blob([payload.report_markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = payload.file_name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  async function sendReportToOpenclaw() {
+    try {
+      setSendingReport(true);
+      await ariaApi.sendReport({
+        openclaw_url: openclawUrl,
+        prompt_prefix: "Send a Slack message with this ARIA cycle report.",
+      });
+      setToast("Report sent to OpenClaw for Slack delivery");
+    } catch (error) {
+      setToast(`Error: ${String(error.message || error)}`);
+    } finally {
+      setSendingReport(false);
     }
   }
 
@@ -320,6 +364,44 @@ export default function App() {
         <button disabled={loading} onClick={() => withLoader(() => clearSession(), "Session cleared")}>Refresh</button>
         <span className="status-pill">{status?.paused ? "PAUSED" : "LIVE"}</span>
       </section>
+
+      <section className="glass report-row">
+        <div>
+          <p className="eyebrow">Post-Cycle Reporting</p>
+          <h2>Company Report Export</h2>
+          <p className="sub">Generate after 1+ cycles, download as .md, or send to Slack via OpenClaw.</p>
+        </div>
+        <div className="report-actions">
+          <input
+            type="url"
+            value={openclawUrl}
+            onChange={(e) => setOpenclawUrl(e.target.value)}
+            placeholder="OpenClaw URL"
+          />
+          <button
+            disabled={loading || (status?.iteration || 0) < 1}
+            onClick={() => withLoader(() => downloadReport(), "Report downloaded", { skipRefresh: true })}
+          >
+            Download Report
+          </button>
+          <button
+            disabled={loading || sendingReport || (status?.iteration || 0) < 1}
+            onClick={sendReportToOpenclaw}
+          >
+            {sendingReport ? "Sending..." : "Send Report to Slack"}
+          </button>
+        </div>
+      </section>
+
+      {report ? (
+        <section className="glass report-preview">
+          <div className="report-preview-head">
+            <h3>{report.company_name} · Iteration {report.iteration}</h3>
+            <small>{report.file_name}</small>
+          </div>
+          <pre>{report.report_markdown}</pre>
+        </section>
+      ) : null}
 
       {mode === "agent" ? (
         <AgentDashboard

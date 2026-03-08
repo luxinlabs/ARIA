@@ -480,3 +480,21 @@ class ComparisonResponse(BaseModel):
     overall_recommendation: str
     risk_assessment: str
     optimization_tips: list[str]
+
+
+class RunReportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    iteration: int
+    file_name: str
+    company_name: str
+    generated_at: datetime
+    report_markdown: str
+
+
+class SendReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    openclaw_url: HttpUrl
+    prompt_prefix: str = "Send a Slack message with this ARIA cycle report."
