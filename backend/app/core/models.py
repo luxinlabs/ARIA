@@ -48,8 +48,12 @@ class HypothesisOutcome(str, Enum):
 class ExperimentStatus(str, Enum):
     DRAFT = "draft"
     RUNNING = "running"
-    COMPLETED = "completed"
-    KILLED = "killed"
+
+
+class PlatformType(str, Enum):
+    GOOGLE = "google"
+    META = "meta"
+    TIKTOK = "tiktok"
 
 
 class RouteAfterEval(str, Enum):
@@ -150,6 +154,16 @@ class ExperimentLogEntry(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
 
 
+class HumanInputDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    decision_type: str  # "platform_allocation", "budget_override", etc.
+    data: dict[str, Any] = Field(default_factory=dict)
+    rationale: str = ""
+    source: str = "human_input"
+
+
 class StrategyMemory(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,6 +172,7 @@ class StrategyMemory(BaseModel):
     retired_angles: list[str] = Field(default_factory=list)
     performance_trajectory: list[float] = Field(default_factory=list)
     next_hypotheses_ranked: list[str] = Field(default_factory=list)
+    human_decisions: list[HumanInputDecision] = Field(default_factory=list)
 
 
 class PlatformPerformanceRecord(BaseModel):
@@ -367,6 +382,7 @@ class ARIAState(BaseModel):
     budget_plan: BudgetPlan = Field(default_factory=lambda: BudgetPlan(total_budget=0.0))
     experiments: list[Experiment] = Field(default_factory=list)
     evaluation: EvaluationVerdict | None = None
+    strategist_decision_id: str | None = None
     events: list[AgentEvent] = Field(default_factory=list)
     paused: bool = False
     pause_reason: str = ""
@@ -425,3 +441,42 @@ class PerformanceResponse(BaseModel):
     cpa: float
     ctr: float
     cvr: float
+
+
+class PlatformAllocationComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform: PlatformType
+    percentage: float = Field(ge=0, le=100)
+
+
+class ComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_budget: float = Field(gt=0)
+    allocations: list[PlatformAllocationComparison]
+    goal: GoalType
+
+
+class PlatformMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform: PlatformType
+    estimated_reach: int
+    estimated_cpa: float
+    estimated_ctr: float
+    estimated_cvr: float
+    audience_fit_score: float = Field(ge=0, le=1)
+    creative_format_score: float = Field(ge=0, le=1)
+    competitive_intensity: str
+    recommendation: str
+
+
+class ComparisonResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_budget: float
+    platform_metrics: list[PlatformMetrics]
+    overall_recommendation: str
+    risk_assessment: str
+    optimization_tips: list[str]

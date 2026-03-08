@@ -28,6 +28,7 @@ from app.core.models import (
     PlatformAllocation,
     RouteAfterEval,
 )
+from app.core.decision_framework import shared_framework
 from app.core.runtime import runtime
 from langgraph.graph import END, START, StateGraph
 
@@ -75,6 +76,18 @@ def _merge_state(state: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]
     Return a full state object by overlaying each node patch on top of incoming state.
     """
     return {**state, **patch}
+
+
+def _emit_status(state: dict[str, Any], agent: AgentName, status: str, reason: str) -> dict[str, Any]:
+    """Emit agent status change event (thinking/running/idle)."""
+    return _event(
+        state,
+        agent,
+        status,
+        reason,
+        confidence=1.0,
+        diff={"status": status}
+    )
 
 
 def observe_signals(state: dict[str, Any]) -> dict[str, Any]:
@@ -138,14 +151,34 @@ def observe_signals(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def growth_strategist_agent(state: dict[str, Any]) -> dict[str, Any]:
-    """Generate growth hypotheses using OpenAI strategy analysis."""
+    """Generate growth hypotheses using OpenAI strategy analysis with self-improvement."""
     brand_info = state.get("brand", {})
     signals = state.get("signals", {})
+    
+    # Check decision framework for learned recommendations
+    context = {
+        "goal": brand_info.get("goal", "purchases"),
+        "budget_range": "high" if brand_info.get("budget_daily", 0) > 1000 else "medium" if brand_info.get("budget_daily", 0) > 500 else "low",
+        "meta_roas": signals.get("meta", {}).get("roas", 0),
+        "google_roas": signals.get("google", {}).get("roas", 0),
+    }
+    
+    recommendation = shared_framework.get_recommendation(
+        agent_name="strategist",
+        decision_type="hypothesis_generation",
+        context=context
+    )
     
     system_prompt = (
         "You are a staff marketing and strategy lead for digital advertising. "
         "Generate data-driven hypotheses based on market signals and brand information."
     )
+    
+    # Enhance prompt with learned insights if available
+    learned_insights = ""
+    if recommendation:
+        learned_insights = f"\n\nLearned insights (success rate: {recommendation['success_rate']:.1%}):\n{json.dumps(recommendation['action'], indent=2)}"
+    
     user_prompt = f"""
     Create 2 strategic hypotheses for this brand:
     - Brand: {brand_info.get('brand_name', 'Unknown')}
@@ -153,6 +186,7 @@ def growth_strategist_agent(state: dict[str, Any]) -> dict[str, Any]:
     - Budget: ${brand_info.get('budget_daily', 0)}
     - Market ROAS: Meta {signals.get('meta', {}).get('roas', 0)}, Google {signals.get('google', {}).get('roas', 0)}
     - Top objection: {signals.get('audience_behavior', {}).get('top_objection', 'Unknown')}
+    {learned_insights}
     
     Provide a JSON response with 2 hypotheses, each containing:
     - statement: Clear hypothesis statement
@@ -210,9 +244,25 @@ def growth_strategist_agent(state: dict[str, Any]) -> dict[str, Any]:
         channel_mix=["meta", "google"],
         constraints=["max daily scale 20%", "frequency cap 3.5"],
     )
+    
+    # Record decision in shared framework for learning
+    decision_id = shared_framework.record_decision(
+        agent_name="strategist",
+        decision_type="hypothesis_generation",
+        decision_data={
+            "hypotheses": [h.statement for h in hypotheses],
+            "top_hypothesis": hypotheses[0].statement,
+            "channel_mix": brief.channel_mix,
+            "angle": brief.angle
+        },
+        confidence=hypotheses[0].confidence,
+        context=context
+    )
+    
     patch = {
         "hypotheses": [h.model_dump(mode="json") for h in hypotheses],
         "campaign_brief": brief.model_dump(mode="json"),
+        "strategist_decision_id": decision_id,  # Track for outcome recording
     }
     patch.update(
         _event(
@@ -221,7 +271,7 @@ def growth_strategist_agent(state: dict[str, Any]) -> dict[str, Any]:
             "rank_hypotheses",
             f"Generated {len(ai_hypotheses)} AI-powered hypotheses for {brand_info.get('brand_name', 'brand')}",
             0.87,
-            {"top_hypothesis": hypotheses[0].statement, "ai_generated": len(ai_hypotheses) >= 2},
+            {"top_hypothesis": hypotheses[0].statement, "ai_generated": len(ai_hypotheses) >= 2, "learning_enabled": True},
         )
     )
     return _merge_state(state, patch)
@@ -419,15 +469,35 @@ def experiment_evaluation_agent(state: dict[str, Any]) -> dict[str, Any]:
         ),
         route=RouteAfterEval.COMPLETE,
     )
+    
+    # Record outcome in shared framework for learning
+    if "strategist_decision_id" in state:
+        # Get performance metrics from signals
+        signals = state.get("signals", {})
+        metrics = {
+            "roas": signals.get("meta", {}).get("roas", 3.0),
+            "ctr": signals.get("meta", {}).get("ctr", 0.03),
+            "cvr": 0.028,  # From effect size
+            "cpa": 25.0,
+        }
+        
+        success = verdict.hypothesis_outcome == HypothesisOutcome.CONFIRMED
+        
+        shared_framework.record_outcome(
+            decision_id=state["strategist_decision_id"],
+            success=success,
+            metrics=metrics
+        )
+    
     patch = {"evaluation": verdict.model_dump(mode="json")}
     patch.update(
         _event(
             state,
             AgentName.EVALUATE,
             "evaluate_experiment",
-            "Evaluated winner based on ROAS + CVR deltas",
+            "Evaluated winner based on ROAS + CVR deltas, updated learning framework",
             0.88,
-            {"outcome": verdict.hypothesis_outcome.value, "route": verdict.route.value},
+            {"outcome": verdict.hypothesis_outcome.value, "route": verdict.route.value, "learning_updated": True},
         )
     )
     return _merge_state(state, patch)
@@ -529,4 +599,5 @@ def build_aria_graph():
 async def run_one_cycle(app_state: ARIAState) -> ARIAState:
     graph = build_aria_graph()
     updated_state = await graph.ainvoke(app_state.model_dump(mode="json"))
+    updated_state.pop("strategist_decision_id", None)
     return ARIAState.model_validate(updated_state)

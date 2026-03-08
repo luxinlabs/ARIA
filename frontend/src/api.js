@@ -1,8 +1,21 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+let activeRunId = null;
+
+export function setActiveRunId(runId) {
+  activeRunId = runId || null;
+}
+
+export function getActiveRunId() {
+  return activeRunId;
+}
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(activeRunId ? { "X-Run-Id": activeRunId } : {}),
+      ...(options.headers || {}),
+    },
     ...options,
   });
 
@@ -23,6 +36,15 @@ export const apiBase = API_BASE;
 export const ariaApi = {
   init(payload) {
     return request("/aria/init", { method: "POST", body: JSON.stringify(payload) });
+  },
+  sessions() {
+    return request("/aria/sessions");
+  },
+  activateSession(runId) {
+    return request(`/aria/sessions/${runId}/activate`, { method: "POST" });
+  },
+  deleteSession(runId) {
+    return request(`/aria/sessions/${runId}`, { method: "DELETE" });
   },
   status() {
     return request("/aria/status");
@@ -47,5 +69,8 @@ export const ariaApi = {
   },
   pause(reason) {
     return request("/aria/pause", { method: "POST", body: JSON.stringify({ reason }) });
+  },
+  reset() {
+    return request("/aria/reset", { method: "POST" });
   },
 };

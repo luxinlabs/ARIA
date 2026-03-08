@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { apiBase, ariaApi } from "./api";
+import { apiBase, ariaApi, setActiveRunId } from "./api";
 
 const wsBase = apiBase.replace("http", "ws");
 
@@ -25,6 +25,8 @@ export default function App() {
   const [experiments, setExperiments] = useState([]);
   const [performance, setPerformance] = useState(null);
   const [events, setEvents] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [selectedRunId, setSelectedRunId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -61,7 +63,23 @@ export default function App() {
     };
   }, [memory]);
 
-  async function refreshAll() {
+  async function refreshAll(preferredRunId) {
+    const sessionsPayload = await ariaApi.sessions();
+    const nextSessions = sessionsPayload?.sessions || [];
+    setSessions(nextSessions);
+
+    const activeSession = nextSessions.find((session) => session.is_active);
+    const hasPreferred = preferredRunId && nextSessions.some((session) => session.run_id === preferredRunId);
+    const hasSelected = selectedRunId && nextSessions.some((session) => session.run_id === selectedRunId);
+    const effectiveRunId = hasPreferred
+      ? preferredRunId
+      : hasSelected
+        ? selectedRunId
+        : activeSession?.run_id || null;
+
+    setActiveRunId(effectiveRunId);
+    setSelectedRunId(effectiveRunId);
+
     const [nextStatus, nextMemory, nextHyp, nextExp, nextPerf] = await Promise.all([
       ariaApi.status(),
       ariaApi.memory(),
@@ -97,12 +115,43 @@ export default function App() {
     });
   }
 
+  async function clearSession() {
+    await ariaApi.reset();
+    seenEventIdsRef.current.clear();
+    setEvents([]);
+  }
+
+  async function switchSession(runId) {
+    if (!runId) {
+      setActiveRunId(null);
+      setSelectedRunId(null);
+      seenEventIdsRef.current.clear();
+      setEvents([]);
+      return;
+    }
+    await ariaApi.activateSession(runId);
+    setActiveRunId(runId);
+    setSelectedRunId(runId);
+    seenEventIdsRef.current.clear();
+    setEvents([]);
+  }
+
+  async function deleteCurrentSession() {
+    if (!selectedRunId) return;
+    await ariaApi.deleteSession(selectedRunId);
+    setActiveRunId(null);
+    setSelectedRunId(null);
+    seenEventIdsRef.current.clear();
+    setEvents([]);
+  }
+
   async function withLoader(task, successMessage) {
     try {
       setLoading(true);
-      await task();
+      const result = await task();
       if (successMessage) setToast(successMessage);
-      await refreshAll();
+      await refreshAll(result?.run_id || null);
+      return result;
     } catch (error) {
       setToast(`Error: ${String(error.message || error)}`);
     } finally {
@@ -111,16 +160,62 @@ export default function App() {
   }
 
   function connectLiveFeed() {
-    const ws = new WebSocket(`${wsBase}/aria/live`);
+    const wsUrl = selectedRunId
+      ? `${wsBase}/aria/live?run_id=${encodeURIComponent(selectedRunId)}`
+      : `${wsBase}/aria/live`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
+        if (selectedRunId && parsed?.run_id && parsed.run_id !== selectedRunId) return;
         const eventId = parsed?.event_id;
         if (eventId && seenEventIdsRef.current.has(eventId)) return;
         if (eventId) seenEventIdsRef.current.add(eventId);
         setEvents((prev) => [parsed, ...prev].slice(0, 120));
+        
+        // Update agent status in real-time
+        if (parsed?.agent && parsed?.action) {
+          setStatus((prevStatus) => {
+            if (!prevStatus) return prevStatus;
+            
+            const newAgentStates = { ...prevStatus.agent_states };
+            
+            // Determine status based on action
+            let newStatus = "running";
+            
+            if (parsed.action.includes("thinking") || parsed.action.includes("analyzing") || parsed.action.includes("generating")) {
+              newStatus = "thinking";
+            } else if (parsed.action.includes("waiting") || parsed.action.includes("pending")) {
+              newStatus = "waiting";
+            } else {
+              // For completed actions, show running briefly then return to idle
+              newStatus = "running";
+              
+              // Set all other agents to idle (only current agent is running)
+              Object.keys(newAgentStates).forEach(agentName => {
+                if (agentName !== parsed.agent) {
+                  newAgentStates[agentName] = {
+                    ...newAgentStates[agentName],
+                    status: "idle"
+                  };
+                }
+              });
+            }
+            
+            newAgentStates[parsed.agent] = {
+              status: newStatus,
+              last_update: parsed.timestamp || new Date().toISOString()
+            };
+            
+            return {
+              ...prevStatus,
+              agent_states: newAgentStates,
+              iteration: parsed.iteration ?? prevStatus.iteration
+            };
+          });
+        }
       } catch {
         // ignore malformed messages
       }
@@ -145,7 +240,7 @@ export default function App() {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (wsRef.current && wsRef.current.readyState <= 1) wsRef.current.close();
     };
-  }, []);
+  }, [selectedRunId]);
 
   useEffect(() => {
     refreshAll().catch(() => {
@@ -177,6 +272,17 @@ export default function App() {
 
       <section className="control-row glass">
         <div className="init-inputs">
+          <select
+            value={selectedRunId || ""}
+            onChange={(e) => withLoader(() => switchSession(e.target.value || null), "Session switched")}
+          >
+            <option value="">Use active session</option>
+            {sessions.map((session) => (
+              <option key={session.run_id} value={session.run_id}>
+                {session.brand_name || "Unnamed"} · {session.run_id.slice(0, 8)} · iter {session.iteration}
+              </option>
+            ))}
+          </select>
           <input
             type="url"
             placeholder="Brand URL"
@@ -210,7 +316,8 @@ export default function App() {
         <button disabled={loading} onClick={() => withLoader(() => initializeRun(), "Run initialized")}>Initialize</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.step(), "Cycle executed")}>Run 1 Cycle</button>
         <button disabled={loading} onClick={() => withLoader(() => ariaApi.pause("Paused from dashboard"), "Run paused")}>Emergency Pause</button>
-        <button disabled={loading} onClick={() => withLoader(() => refreshAll(), "Refreshed")}>Refresh</button>
+        <button disabled={loading || !selectedRunId} onClick={() => withLoader(() => deleteCurrentSession(), "Session deleted")}>Delete Session</button>
+        <button disabled={loading} onClick={() => withLoader(() => clearSession(), "Session cleared")}>Refresh</button>
         <span className="status-pill">{status?.paused ? "PAUSED" : "LIVE"}</span>
       </section>
 
@@ -260,6 +367,16 @@ export default function App() {
 }
 
 function AgentDashboard({ status, hypotheses, experiments, events, performance, summaryStats }) {
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'thinking': return '#f59e0b'; // amber
+      case 'running': return '#10b981'; // green
+      case 'waiting': return '#3b82f6'; // blue
+      case 'idle': return '#6b7280'; // gray
+      default: return '#6b7280';
+    }
+  };
+
   return (
     <main className="grid">
       <article className="glass panel">
@@ -267,8 +384,17 @@ function AgentDashboard({ status, hypotheses, experiments, events, performance, 
         <div className="agent-grid">
           {Object.entries(status?.agent_states || {}).map(([agent, state]) => (
             <div key={agent} className="agent-card">
-              <span>{agent}</span>
-              <b>{state.status}</b>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: getStatusColor(state.status),
+                  animation: state.status !== 'idle' ? 'pulse 2s infinite' : 'none'
+                }} />
+                <span>{agent}</span>
+              </div>
+              <b style={{ color: getStatusColor(state.status) }}>{state.status}</b>
             </div>
           ))}
         </div>
